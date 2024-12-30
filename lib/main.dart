@@ -30,7 +30,7 @@ class GameBoard extends StatefulWidget {
   GameBoardState createState() => GameBoardState();
 }
 
-class GameBoardState extends State<GameBoard> {
+class GameBoardState extends State<GameBoard> with SingleTickerProviderStateMixin{
   static const int boardSize = 10;
   static const int bombCount = 15; // Number of bombs in the game
   static const int initialPieces = 20; // Number of initial movable pieces
@@ -43,15 +43,34 @@ class GameBoardState extends State<GameBoard> {
   int explodedBombs = 0;
   bool isGameOver = false;
 
+
+  // Animation controllers
+  late AnimationController _explosionController;
+  late AnimationController _gameOverController;
+  Point<int>? lastExplodedPosition;
+
+
   @override
   void initState() {
     super.initState();
+
+    _explosionController = AnimationController(
+      duration: const Duration(milliseconds: 800),
+      vsync: this,
+    );
+    _gameOverController = AnimationController(
+      duration: const Duration(seconds: 2),
+      vsync: this,
+    );
+
     initializeGame();
   }
 
 
   @override
   void dispose() {
+    _explosionController.dispose();
+    _gameOverController.dispose();
     gameTimer.cancel();
     super.dispose();
   }
@@ -62,27 +81,53 @@ class GameBoardState extends State<GameBoard> {
       appBar: AppBar(
         title: const Text('Reversed Minesweeper'),
       ),
-      body: Column(
+      body: Stack(
         children: [
-          GameStats(
-            discoveredBombs: discoveredBombs,
-            explodedBombs: explodedBombs,
+          Column(
+            children: [
+              GameStats(
+                discoveredBombs: discoveredBombs,
+                explodedBombs: explodedBombs,
+              ),
+              Expanded(
+                child: isGameOver
+                    ? GameOverAnimation(
+                  animation: _gameOverController,
+                  discoveredBombs: discoveredBombs,
+                )
+                    : GameGrid(
+                  board: board,
+                  pieces: pieces,
+                  onPiecePlaced: tryPlacePiece,
+                  lastExplodedPosition: lastExplodedPosition,
+                  explosionAnimation: _explosionController,
+                ),
+              ),
+            ],
           ),
-          Expanded(
-            child: isGameOver
-                ? GameOverWidget(discoveredBombs: discoveredBombs)
-                : GameGrid(
-              board: board,
-              pieces: pieces,
-              onPiecePlaced: tryPlacePiece,
+          if (lastExplodedPosition != null)
+            ExplosionEffect(
+              position: lastExplodedPosition!,
+              animation: _explosionController,
+              boardSize: boardSize,
             ),
-          ),
         ],
       ),
     );
   }
 
   /// class methods ------------------------------------------------------------
+  ///
+  void playExplosionAnimation(Point<int> position) {
+    setState(() {
+      lastExplodedPosition = position;
+    });
+    _explosionController.forward(from: 0.0).then((_) {
+      setState(() {
+        lastExplodedPosition = null;
+      });
+    });
+  }
   /// Initializes the game state, including placing bombs and pieces.
   void initializeGame() {
     // Initialize the board with empty squares
@@ -153,6 +198,7 @@ class GameBoardState extends State<GameBoard> {
     gameTimer.cancel();
     setState(() {
       isGameOver = true;
+      _gameOverController.forward(from: 0.0);
     });
   }
 
@@ -171,16 +217,15 @@ class GameBoardState extends State<GameBoard> {
     }
 
     setState(() {
-      // Update the board and piece positions
       board[piece.position.x][piece.position.y].hasPiece = false;
       piece.position = newPosition;
       targetSquare.hasPiece = true;
 
-      // Check for and handle bomb discovery
       if (targetSquare.hasBomb) {
         discoveredBombs++;
         bombs.remove(newPosition);
         targetSquare.hasBomb = false;
+        playExplosionAnimation(newPosition);
 
         if (bombs.isEmpty) {
           endGame();
@@ -190,6 +235,7 @@ class GameBoardState extends State<GameBoard> {
 
     return true;
   }
+
 }
 
 /// A widget to display the game statistics such as discovered and exploded bombs.
@@ -223,31 +269,33 @@ class GameGrid extends StatelessWidget {
   final List<List<BoardSquare>> board;
   final List<GamePiece> pieces;
   final bool Function(GamePiece piece, Point<int> newPosition) onPiecePlaced;
+  final Point<int>? lastExplodedPosition;
+  final Animation<double> explosionAnimation;
 
   const GameGrid({
     super.key,
     required this.board,
     required this.pieces,
     required this.onPiecePlaced,
+    required this.lastExplodedPosition,
+    required this.explosionAnimation,
   });
 
   @override
   Widget build(BuildContext context) {
-    const boardSize = 10;
-
     return GridView.builder(
       physics: const NeverScrollableScrollPhysics(),
       padding: const EdgeInsets.all(16.0),
       gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-        crossAxisCount: boardSize,
+        crossAxisCount: 10,
         childAspectRatio: 1.0,
         crossAxisSpacing: 2.0,
         mainAxisSpacing: 2.0,
       ),
-      itemCount: boardSize * boardSize,
+      itemCount: 100,
       itemBuilder: (context, index) {
-        final x = index ~/ boardSize;
-        final y = index % boardSize;
+        final x = index ~/ 10;
+        final y = index % 10;
 
         return DragTarget<GamePiece>(
           builder: (context, candidates, rejects) {
@@ -261,7 +309,24 @@ class GameGrid extends StatelessWidget {
                 data: pieces.firstWhere(
                       (p) => p.position.x == x && p.position.y == y,
                 ),
-                feedback: const GamePieceWidget(),
+                feedback: Material(
+                  color: Colors.transparent,
+                  child: Container(
+                    width: 30,
+                    height: 30,
+                    decoration: const BoxDecoration(
+                      color: Colors.blue,
+                      shape: BoxShape.circle,
+                      boxShadow: [
+                        BoxShadow(
+                          color: Colors.black26,
+                          blurRadius: 8,
+                          offset: Offset(0, 4),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
                 childWhenDragging: Container(),
                 child: const GamePieceWidget(),
               )
@@ -277,6 +342,7 @@ class GameGrid extends StatelessWidget {
     );
   }
 }
+
 
 /// A widget to display a "Game Over" message and the total discovered bombs.
 class GameOverWidget extends StatelessWidget {
@@ -339,6 +405,126 @@ class GamePieceWidget extends StatelessWidget {
         color: Colors.blue,
         shape: BoxShape.circle,
       ),
+    );
+  }
+}
+
+
+class ExplosionEffect extends StatelessWidget {
+  final Point<int> position;
+  final Animation<double> animation;
+  final int boardSize;
+
+  const ExplosionEffect({
+    super.key,
+    required this.position,
+    required this.animation,
+    required this.boardSize,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: animation,
+      builder: (context, child) {
+        final size = MediaQuery.of(context).size;
+        final cellSize = (size.width - 32) / boardSize;
+        final x = position.x * cellSize + 16;
+        final y = position.y * cellSize + 80; // Adjusted for AppBar and stats
+
+        return Positioned(
+          left: x,
+          top: y,
+          child: Opacity(
+            opacity: 1.0 - animation.value,
+            child: Transform.scale(
+              scale: 1.0 + animation.value * 2,
+              child: Container(
+                width: cellSize,
+                height: cellSize,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  gradient: RadialGradient(
+                    colors: [
+                      Colors.yellow.withOpacity(0.8),
+                      Colors.orange.withOpacity(0.6),
+                      Colors.red.withOpacity(0.4),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+}
+
+
+class GameOverAnimation extends StatelessWidget {
+  final Animation<double> animation;
+  final int discoveredBombs;
+
+  const GameOverAnimation({
+    super.key,
+    required this.animation,
+    required this.discoveredBombs,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: animation,
+      builder: (context, child) {
+        return Transform.scale(
+          scale: 0.5 + animation.value * 0.5,
+          child: Opacity(
+            opacity: animation.value,
+            child: Container(
+              padding: const EdgeInsets.all(32),
+              decoration: BoxDecoration(
+                color: Colors.blue.withOpacity(0.9),
+                borderRadius: BorderRadius.circular(16),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withOpacity(0.3),
+                    blurRadius: 10,
+                    spreadRadius: 5,
+                  ),
+                ],
+              ),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Text(
+                    'Game Over!',
+                    style: TextStyle(
+                      fontSize: 48,
+                      fontWeight: FontWeight.bold,
+                      color: Colors.white,
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  TweenAnimationBuilder<int>(
+                    duration: const Duration(seconds: 2),
+                    tween: IntTween(begin: 0, end: discoveredBombs),
+                    builder: (context, value, child) {
+                      return Text(
+                        'Discovered Bombs: $value',
+                        style: const TextStyle(
+                          fontSize: 24,
+                          color: Colors.white,
+                        ),
+                      );
+                    },
+                  ),
+                ],
+              ),
+            ),
+          ),
+        );
+      },
     );
   }
 }
